@@ -14,6 +14,7 @@ namespace Squirrel.Update
         internal string packagesDir { get; private set; } = default(string);
         internal string bootstrapperExe { get; private set; } = default(string);
         internal string backgroundGif { get; private set; } = default(string);
+        internal string signTool { get; private set; } = default(string);
         internal string signingParameters { get; private set; } = default(string);
         internal string baseUrl { get; private set; } = default(string);
         internal string processStart { get; private set; } = default(string);
@@ -57,7 +58,8 @@ namespace Squirrel.Update
                 { "g=|loadingGif=", "Path to an animated GIF to be displayed during installation", v => backgroundGif = v},
                 { "i=|icon", "Path to an ICO file that will be used for icon shortcuts", v => icon = v},
                 { "setupIcon=", "Path to an ICO file that will be used for the Setup executable's icon", v => setupIcon = v},
-                { "n=|signWithParams=", "Sign the installer via SignTool.exe with the parameters given", v => signingParameters = v},
+                { "signTool=", "Path to code signing utility (available: \"signtool\", \"osslsigncode\")", v => signTool = v},
+                { "n=|signWithParams=", "Sign the installer via SignTool.exe or other with the parameters given", v => signingParameters = v},
                 { "s|silent", "Silent install", _ => silentInstall = true},
                 { "b=|baseUrl=", "Provides a base URL to prefix the RELEASES file packages with", v => baseUrl = v, true},
                 { "a=|process-start-args=", "Arguments that will be used when starting executable", v => processStartArgs = v, true},
