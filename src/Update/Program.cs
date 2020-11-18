@@ -89,6 +89,7 @@ namespace Squirrel.Update
                 string packagesDir = default(string);
                 string bootstrapperExe = default(string);
                 string backgroundGif = default(string);
+                string signTool = default(string);
                 string signingParameters = default(string);
                 string baseUrl = default(string);
                 string processStart = default(string);
@@ -126,6 +127,7 @@ namespace Squirrel.Update
                     { "g=|loadingGif=", "Path to an animated GIF to be displayed during installation", v => backgroundGif = v},
                     { "i=|icon", "Path to an ICO file that will be used for icon shortcuts", v => icon = v},
                     { "setupIcon=", "Path to an ICO file that will be used for the Setup executable's icon", v => setupIcon = v},
+                    { "signTool=", "Path to code signing utility (available: \"signtool\", \"osslsigncode\")", v => signTool = v},
                     { "n=|signWithParams=", "Sign the installer via SignTool.exe with the parameters given", v => signingParameters = v},
                     { "s|silent", "Silent install", _ => silentInstall = true},
                     { "b=|baseUrl=", "Provides a base URL to prefix the RELEASES file packages with", v => baseUrl = v, true},
@@ -184,7 +186,7 @@ namespace Squirrel.Update
                     break;
 #endif
                 case UpdateAction.Releasify:
-                    Releasify(target, releaseDir, packagesDir, bootstrapperExe, backgroundGif, signingParameters, baseUrl, setupIcon, !noMsi, frameworkVersion, !noDelta);
+                    Releasify(target, releaseDir, packagesDir, bootstrapperExe, backgroundGif, signTool, signingParameters , baseUrl, setupIcon, !noMsi, frameworkVersion, !noDelta);
                     break;
                 }
             }
@@ -343,7 +345,7 @@ namespace Squirrel.Update
             }
         }
 
-        public void Releasify(string package, string targetDir = null, string packagesDir = null, string bootstrapperExe = null, string backgroundGif = null, string signingOpts = null, string baseUrl = null, string setupIcon = null, bool generateMsi = true, string frameworkVersion = null, bool generateDeltas = true)
+        public void Releasify(string package, string targetDir = null, string packagesDir = null, string bootstrapperExe = null, string backgroundGif = null, string signTool = null, string signingOpts = null, string baseUrl = null, string setupIcon = null, bool generateMsi = true, string frameworkVersion = null, bool generateDeltas = true)
         {
             ensureConsole();
 
@@ -412,7 +414,7 @@ namespace Squirrel.Update
                             }
 
                             this.Log().Info("About to sign {0}", x.FullName);
-                            await signPEFile(x.FullName, signingOpts);
+                            await signPEFile(x.FullName, signingOpts, signTool);
                         }, 1)
                         .Wait();
                 });
@@ -444,7 +446,7 @@ namespace Squirrel.Update
             var newestFullRelease = releaseEntries.MaxBy(x => x.Version).Where(x => !x.IsDelta).First();
 
             File.Copy(bootstrapperExe, targetSetupExe, true);
-            var zipPath = createSetupEmbeddedZip(Path.Combine(di.FullName, newestFullRelease.Filename), di.FullName, backgroundGif, signingOpts, setupIcon).Result;
+            var zipPath = createSetupEmbeddedZip(Path.Combine(di.FullName, newestFullRelease.Filename), di.FullName, backgroundGif, signingOpts, signTool, setupIcon).Result;
 
             var writeZipToSetup = Utility.FindHelperExecutable("WriteZipToSetup.exe");
 
@@ -462,14 +464,14 @@ namespace Squirrel.Update
                 setPEVersionInfoAndIcon(targetSetupExe, new ZipPackage(package), setupIcon).Wait());
 
             if (signingOpts != null) {
-                signPEFile(targetSetupExe, signingOpts).Wait();
+                signPEFile(targetSetupExe, signingOpts, signTool).Wait();
             }
 
             if (generateMsi) {
                 createMsiPackage(targetSetupExe, new ZipPackage(package)).Wait();
 
                 if (signingOpts != null) {
-                    signPEFile(targetSetupExe.Replace(".exe", ".msi"), signingOpts).Wait();
+                    signPEFile(targetSetupExe.Replace(".exe", ".msi"), signingOpts, signTool).Wait();
                 }
             }
         }
@@ -582,7 +584,7 @@ namespace Squirrel.Update
             }
         }
 
-        async Task<string> createSetupEmbeddedZip(string fullPackage, string releasesDir, string backgroundGif, string signingOpts, string setupIcon)
+        async Task<string> createSetupEmbeddedZip(string fullPackage, string releasesDir, string backgroundGif, string signingOpts, string signTool, string setupIcon)
         {
             string tempPath;
 
@@ -620,7 +622,7 @@ namespace Squirrel.Update
                         .Where(x => x.Name.ToLowerInvariant().EndsWith(".exe"))
                         .Select(x => x.FullName);
 
-                    await files.ForEachAsync(x => signPEFile(x, signingOpts));
+                    await files.ForEachAsync(x => signPEFile(x, signingOpts, signTool));
                 }
 
                 this.ErrorIfThrows(() =>
@@ -631,32 +633,58 @@ namespace Squirrel.Update
             }
         }
 
-        static async Task signPEFile(string exePath, string signingOpts)
+        static async Task signPEFile(string exePath, string signingOpts, string signTool = "signtool")
         {
-            // Try to find SignTool.exe
-            var exe = @".\signtool.exe";
-            if (!File.Exists(exe)) {
-                exe = Path.Combine(
-                    Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
-                    "signtool.exe");
+            switch(signTool) {
+              case "osslsigncode": {
+                var exe = @"osslsigncode";
+                String tmpPath = exePath + ".unsigned";
+                File.Move(exePath, tmpPath);
 
-                // Run down PATH and hope for the best
-                if (!File.Exists(exe)) exe = "signtool.exe";
-            }
+                var processResult = await Utility.InvokeProcessAsync(exe,
+                    String.Format("sign {0} -in \"{1}\" -out \"{2}\"", signingOpts, tmpPath, exePath), CancellationToken.None);
 
-            var processResult = await Utility.InvokeProcessAsync(exe,
-                String.Format("sign {0} \"{1}\"", signingOpts, exePath), CancellationToken.None);
+                File.Delete(tmpPath);
 
-            if (processResult.Item1 != 0) {
-                var optsWithPasswordHidden = new Regex(@"/p\s+\w+").Replace(signingOpts, "/p ********");
-                var msg = String.Format("Failed to sign, command invoked was: '{0} sign {1} {2}'",
-                    exe, optsWithPasswordHidden, exePath);
+                if (processResult.Item1 != 0) {
+                    var optsWithPasswordHidden = new Regex(@"-pass\s+(\w+|""[^""]*"")").Replace(signingOpts, "-pass ********");
+                    var msg = String.Format("Failed to sign, command invoked was: '{0} sign {1} -in \"{2}\" -out \"{3}\"'. Text returned was {4}",
+                        exe, optsWithPasswordHidden, tmpPath, exePath, processResult.Item2);
 
-                throw new Exception(msg);
-            } else {
-                Console.WriteLine(processResult.Item2);
+                    throw new Exception(msg);
+                } else {
+                  Console.WriteLine(processResult.Item2);
+                }
+                break;
+              }
+              default: {
+                var exe = @".\signtool.exe";
+                if (!File.Exists(exe)) {
+        					exe = Path.Combine(
+        						Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
+        						"signtool.exe");
+
+        					// Run down PATH and hope for the best
+        					if (!File.Exists(exe)) exe = "signtool.exe";
+        				}
+
+                var processResult = await Utility.InvokeProcessAsync(exe,
+                    String.Format("sign {0} \"{1}\"", signingOpts, exePath), CancellationToken.None);
+
+                if (processResult.Item1 != 0) {
+                    var optsWithPasswordHidden = new Regex(@"/p\s+(\w+|""[^""]*"")").Replace(signingOpts, "/p ********");
+                    var msg = String.Format("Failed to sign, command invoked was: '{0} sign {1} {2}'. Text returned was {3}",
+                        exe, optsWithPasswordHidden, exePath, processResult.Item2);
+
+                    throw new Exception(msg);
+                } else {
+                  Console.WriteLine(processResult.Item2);
+                }
+                break;
+              }
             }
         }
+
         bool isPEFileSigned(string path)
         {
 #if MONO
